@@ -8,9 +8,12 @@ from flask_bcrypt import Bcrypt
 from datetime import date
 from marshmallow import Schema, fields, ValidationError, validates,validate
 import random
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"]=os.environ.get("sql_url")
+#app.config["SQLALCHEMY_DATABASE_URI"]=os.getenv("sql_url")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"]=False
 app.secret_key = os.urandom(32)
 login_manager = LoginManager(app)
@@ -21,8 +24,6 @@ bcrypt = Bcrypt(app)
 
 from models import *
 
-db.drop_all()
-db.create_all()
 
 @login_manager.user_loader
 def load_user(customer_id):  
@@ -33,7 +34,7 @@ class LoginSchema(Schema):
     password = fields.Str(required=True,validate = validate.Length(max=64))
 
 class SignupSchema(LoginSchema):
-    username = fields.Str(required=True,validate = validate.Length(max=64))
+    username = fields.Str(required=True,validate = validate.Length(max=15))
     full_name = fields.Str(required=True,validate = validate.Length(max=256))
     phone_number = fields.Str(required=True,validate = validate.Length(max=128))
     dob = fields.Str(required=True,validate = validate.Length(max=64))
@@ -52,26 +53,27 @@ for i in range(1,26):
 def calculateAge(birthDate):
     today = date.today()
     age = today.year - birthDate.year -((today.month, today.day) <(birthDate.month, birthDate.day))
+    print(type(age))
     return age
 
 def generate_customer_id(val):
     val = val.upper()
     customer_id =''
     for i in range(len(val)):
-        customer_id += str(charlist[val[i]-'A'])
+        customer_id += str(charlist[ord(val[i])-ord('A')])
     return customer_id
 
 def generate_account_no():
     last_account_no = db.session.query(Account).order_by(Account.account_no.desc()).first()
     if last_account_no:
-        return last_account_no+1
-    return 10000000000
+        return str(int(last_account_no.account_no)+1)
+    return str(10000000000)
 
 def generate_card_no():
     last_card_no = db.session.query(CardDetails).order_by(CardDetails.atm_card_no.desc()).first()
     if last_card_no:
-        return last_card_no+1
-    return 1000000000000000
+        return str(int(last_card_no.atm_card_no)+1)
+    return str(1000000000000000)
 
 @app.route('/',methods=['GET'])
 def index():
@@ -85,12 +87,13 @@ def login():
     try:
         schema = LoginSchema()
         schema.load(data)
+        print(type(schema))
     except ValidationError as err:
         return jsonify(err.messages), 400
     
     user = User.query.filter_by(email=data['email']).first()
     if user and bcrypt.check_password_hash(user.password,data['password']):
-        login_user(user)
+        login_user(user,remember=True)
         return jsonify("you have successfully logged in.")
     else:
         return jsonify('email or password is incorrect') , 422
@@ -111,13 +114,15 @@ def signup():
         return jsonify('That email is taken. Please choose a different one.') , 422
 
     hashed_password = bcrypt.generate_password_hash(user_data['password']).decode('utf-8')
-    user = User(customer_id = generate_customer_id(user_data['username']), full_name=user_data['full_name'],\
+    try:
+        user = User(customer_id = generate_customer_id(user_data['username']), full_name=user_data['full_name'],\
         username= user_data['username'],email=user_data['email'], password=hashed_password, \
         phone_number= user_data['phone_number'],dob= user_data['dob'], address = user_data['address'] )
-    
-    db.session.add(user)
-    db.session.commit()
-    login_user(user)
+        db.session.add(user)
+        db.session.commit()
+    except:
+        return jsonify("That username is taken. Please choose a different one.")
+    login_user(user,remember=True)
     return jsonify("you have successfully registered and logged in.")
 
 @login_required
@@ -130,19 +135,19 @@ def logout():
 @app.route('/open-account',methods=['GET'])
 def open_account():
     data = request.headers
-    account_type =data.get('account_type',None, str),
-    amount = data.get('amount',None, int)
+    account_type =data.get('account_type',None,str)
+    amount = data.get('amount',None,int)
     if account_type and amount:
         account_type_obj = AccountType.query.filter_by(type=account_type.title()).first()
-        year = calculateAge(datetime.datetime.strftime(current_user.dob,'%Y-%m-%d'))
+        year = calculateAge(datetime.datetime.strptime(current_user.dob,'%Y-%m-%d'))
         if account_type_obj and account_type_obj.minimum_amount >=amount and year > account_type_obj.minimum_age:
             account_no = generate_account_no()
             account = Account(balance=amount, account_no= account_no,\
-                account_type=type, customer_id=current_user.customer_id, date = datetime.datetime.now.strftime('%Y-%m-%d'))
+                account_type=account_type_obj.type, customer_id=current_user.customer_id, date = str(datetime.datetime.now().strftime('%Y-%m-%d')))
             db.session.add(account)
-            expiry_date = datetime.date.today()
-            expiry_date.year = datetime.date.today().year+10
-            card = CardDetails(account_no=account.account_no,atm_card_no=generate_card_no(),cvv=random.randint(100,999),expiry_date=expiry_date.strftime('%Y-%m-%d'))
+            current_date = datetime.datetime.now()
+            expiry_date = f"{int(current_date.strftime('%Y'))+10}-{current_date.strftime('%m-%d')}"
+            card = CardDetails(account_no=account.account_no,atm_card_no=generate_card_no(),cvv=random.randint(100,999),expiry_date=expiry_date)
             db.session.add(card)
             db.session.commit()
             return jsonify("account created successfully")
